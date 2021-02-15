@@ -1,166 +1,223 @@
 --------------------------------------------------------------------------------------------------------
--- @module    Yogarine.MusicPlayer
--- @author    Alwin "Yogarine" Garside <alwin@garsi.de>
--- @copyright 2020 Alwin Garside
--- @license   https://opensource.org/licenses/BSD-2-Clause 2-Clause BSD License
+--- Music Player for Crayta's editor.
+---
+--- To use, just drag the `Music Player` template into your World Tree, and make sure the `simulate`
+--- property is enabled.
+---
+--- There are two ways to queue songs. By default songs are played from the currently selected Playlist
+--- in the `Playlist` property. Create your own playlists by adding instances of the `Music Playlist`
+--- template to the World and adding songs to the `Tracks` property.
+---
+--- You can also queue up additional songs in the `Queue` Property. Music Player will then play through
+--- the Queue first, before returning playback to the Playlist.
+---
+--- Enable the PLAY property to start playback. The + and - buttons next to `PREV | NEXT` can be used to
+--- skip and go back through the queue and/or playlist.
+---
+--- If you run into any bugs, make sure to report them here:
+--- https://github.com/Yogarine/crayta-music-player/issues
+---
+--- @author    Alwin "Yogarine" Garside <alwin@garsi.de>
+--- @copyright 2021 Alwin Garside
+--- @license   https://opensource.org/licenses/MIT MIT License
+---
+--- @class MusicPlayer : Sound
+--- @field musicPlayerScript MusicPlayerScript
 --------------------------------------------------------------------------------------------------------
 
 --------------------------------------------------------------------------------------------------------
--- @type MusicPlayerScript
--- @todo Fade-in
+--- @class MusicPlayerScript : Script<MusicPlayer>
+--- @field properties   MusicPlayerScriptProperties @Bag of values produced from Script.Properties.
+--- @field Util         Script<Sound>               @Yogarine's Util class.
+--- @field connected    boolean                     @Sets whether this Player is synced with the server.
+--- @field songProgress number                      @Current song's play time.
+--- @field active       boolean                     @Manually keep track of active state, because we
+---                                                 don't want to override the client active state by
+---                                                 toggling the Entity's active property on the server.
+--- @field sound        SoundAsset                  @Manually keep track of the current sound, because
+---                                                 we don't want to override the client sound by
+---                                                 toggling the Entity's sound property on the server.
+--- @field offset       number
+--- @field clientReady  boolean
 --------------------------------------------------------------------------------------------------------
-
----
--- @field properties Properties: Holds the values that have been set on an instance of a script.
----
 local MusicPlayerScript = {
-	PROPERTY_PLAY          = "PLAY",
-	PROPERTY_PREV_NEXT     = "PREV | NEXT",
-	PROPERTY_QUEUE         = "Queue",
-	PROPERTY_PLAYLIST      = "Active Playlist",
-	PROPERTY_SONG_DURATION = "Song Duration"
+	PREV_NEXT = "PREV | NEXT"
 }
 
----
--- Script properties are defined here.
----
+--------------------------------------------------------------------------------------------------------
+--- @class MusicPlayerScriptProperties : Properties
+--- @field PLAY              boolean
+--- @field ["PREV | NEXT"]   number
+--- @field Queue             PropertyArray<SoundAsset>
+--- @field Playlist          MusicPlaylist
+--- @field Duration          number
+--- @field queuePosition     number
+--- @field playlistPosition  number
+--- @field songDuration      number
+--------------------------------------------------------------------------------------------------------
+
+----
+--- Script properties are defined here.
+----
 MusicPlayerScript.Properties = {
 	{
-		name                = MusicPlayerScript.PROPERTY_PLAY,
-		type                = "boolean",
-		tooltip             = "Play / Stop music playback",
+		name    = "PLAY",
+		type    = "boolean",
+		tooltip = "Play / Stop music playback",
 	},
 	{
-		name                = MusicPlayerScript.PROPERTY_PREV_NEXT,
-		type                = "number",
-		tooltip             = "Skip to the next / previous song by pressing the +/- buttons",
-		default             = 1
+		name    = MusicPlayerScript.PREV_NEXT,
+		type    = "number",
+		tooltip = "Skip to the next / previous song by pressing the +/- buttons",
+		default = 2000000000
 	},
 	{
-		name                = MusicPlayerScript.PROPERTY_QUEUE,
-		type                = "soundasset",
-		tooltip             = "Songs to play.",
-		container           = "array"
+		name      = "Queue",
+		type      = "soundasset",
+		tooltip   = "Songs to play.",
+		container = "array"
 	},
 	{
-		name                = MusicPlayerScript.PROPERTY_PLAYLIST,
-		type                = "entity",
-		tooltip             = "Active Playlist.",
+		name    = "Playlist",
+		type    = "entity",
+		tooltip = "Active Playlist.",
+		is      = "Locator"
 	},
 	{
-		name                = MusicPlayerScript.PROPERTY_SONG_DURATION,
-		type                = "number",
-		tooltip             = "Default song duration",
-		default             = 150,
-		editor              = "seconds"
+		name    = "Duration",
+		type    = "number",
+		tooltip = "Default song duration",
+		default = 210,
+		editor  = "seconds"
 	},
 	{
-		name                = "currentQueuePosition",
-		type                = "number",
-		allowFloatingPoint  = false,
-		editable            = false,
-		default             = 0
+		name               = "queuePosition",
+		type               = "number",
+		allowFloatingPoint = false,
+		editable           = false,
+		default            = 0
 	},
 	{
-		name                = "currentPlaylistPosition",
-		type                = "number",
-		allowFloatingPoint  = false,
-		editable            = false,
-		default             = 0
+		name               = "playlistPosition",
+		type               = "number",
+		allowFloatingPoint = false,
+		editable           = false,
+		default            = 0
 	},
 	{
-		name                = "currentSongDuration",
-		type                = "number",
-		editable            = false,
-		default             = 0
+		name     = "songDuration",
+		type     = "number",
+		editable = false,
+		default  = 1500
 	},
 }
 
+----
+--- Initializes all the fields on this instance.
 ---
--- Initializes all the fields on this instance.
----
+--- @return void
+----
 function MusicPlayerScript:InitFields()
-	Printf("MusicPlayer: InitFields")
+	--Printf("MusicPlayer: InitFields")
+
 	local entity = self:GetEntity()
 
-	---
-	-- !Util: Yogarine's Util class.
-	---
 	self.Util = entity.util
-
-	---
-	-- number: Current song's play time.
-	---
-	self.currentSongProgress = 0
-
-	if IsClient() then
-		---
-		-- number: Current position in queue.
-		---
-		self.currentQueuePosition = 0
-
-		---
-		-- number: Current position in playlist.
-		---
-		self.currentPlaylistPosition = 0
-
-		---
-		-- number: Current song's duration.
-		---
-		self.currentSongDuration = self.properties.currentSongDuration or self.properties[MusicPlayerScript.PROPERTY_SONG_DURATION]
-
-		---
-		-- bool: Wether this MusicPlayer is connected to the server.
-		---
-		self.connected = true
-	end
-
-	---
-	-- bool: Manually keep track of active state, because we don't want to override the
-	--       client active state by toggling the entity's active property on the server.
-	---
 	self.active = entity.active
-
-	self.offset = self.properties[MusicPlayerScript.PROPERTY_PREV_NEXT]
+	self.offset = self.properties[MusicPlayerScript.PREV_NEXT]
+	self.songProgress = 0
 end
 
+----
+--- This function is called on the server when this entity is created.
 ---
--- This function is called on the server when this entity is created.
----
+--- @return void
+----
 function MusicPlayerScript:Init()
-	Printf("MusicPlayer: Init")
+	--Printf("MusicPlayer: Init")
+
 	self:InitFields()
 
-	self.properties.currentQueuePosition = 0
-	self.properties.currentSongDuration  = self.properties[MusicPlayerScript.PROPERTY_SONG_DURATION]
-
-	if self.properties[MusicPlayerScript.PROPERTY_PLAY] then
-		self:Play()
-	end
+	self.clientReady = false
 end
 
+----
+--- This function is called on the client when this entity is created
 ---
--- This function is called on the client when this entity is created
----
+--- @return void
+----
 function MusicPlayerScript:ClientInit()
-	Printf("MusicPlayer: ClientInit")
-	self:InitFields()
+	--Printf("MusicPlayer: ClientInit")
 
-	if not self.connected and self.properties[MusicPlayerScript.PROPERTY_PLAY] then
-		self:Play()
-	end
+	self:InitFields()
+	self.connected = true
+
+	self.localProperties = {
+		----
+        --- @type MusicPlaylist
+        ----
+		Playlist         = self.properties.Playlist,
+
+		----
+        --- @type PropertyArray<SoundAsset>
+        ----
+		Queue            = self.properties.Queue,
+
+		----
+        --- @type number
+        ----
+		Duration         = self.properties.Duration,
+
+		----
+        --- @type boolean
+        ----
+		PLAY             = self.properties.PLAY,
+
+		----
+        --- Current position in queue.
+        ---
+        --- @type number
+        ----
+		queuePosition    = self.properties.queuePosition,
+
+		----
+        ---Current position in playlist.
+        ---
+        --- @type number
+        ----
+		playlistPosition = self.properties.playlistPosition,
+
+		----
+        --- @type number
+        ----
+		songDuration     = self.properties.songDuration
+			or self.properties.Duration,
+	}
+
+	self:SendToServer("OnClientReady")
+end
+
+function MusicPlayerScript:OnClientReady()
+	self.clientReady = true
 end
 
 ---
--- Called each frame on the server.
---
--- @tparam  number  deltaTimeSeconds  Time elapsed since the last frame was rendered.
+--- Called each frame on the server.
+---
+--- @param  deltaTimeSeconds  number  @Time elapsed since the last frame was rendered.
+--- @return void
 ---
 function MusicPlayerScript:OnTick(deltaTimeSeconds)
+	if not self.clientReady then
+		return
+	end
+
 	-- Check if play state has changed.
-	local play = self.properties[MusicPlayerScript.PROPERTY_PLAY]
-	--	Printf("active: {1}, play: {2}", self.active, play)
+	local play = self.properties.PLAY
 	if self.active ~= play then
+		--Printf("MusicPlayer: self.active ({1}) != self.properties.PLAY ({2})", self.active, play)
+
+		--self.active = play
 		if play then
 			self:Play()
 		else
@@ -168,307 +225,492 @@ function MusicPlayerScript:OnTick(deltaTimeSeconds)
 		end
 	end
 
-	--Printf("offset: {1}", self.properties[MusicPlayerScript.PROPERTY_PREV_NEXT])
-	if self.offset ~= self.properties[MusicPlayerScript.PROPERTY_PREV_NEXT] then
-		if self.properties[MusicPlayerScript.PROPERTY_PREV_NEXT] > self.offset then
+	if self.offset ~= self.properties[MusicPlayerScript.PREV_NEXT] then
+		--Printf(
+		--	"MusicPlayer: offset ({1}) ~= Prev / Next ({2})",
+		--	self.offset, self.properties[MusicPlayerScript.PREV_NEXT]
+		--)
+
+		if self.properties[MusicPlayerScript.PREV_NEXT] > self.offset then
 			self:Next()
 		else
 			self:Previous()
 		end
 
-		self.offset = self.properties[MusicPlayerScript.PROPERTY_PREV_NEXT]
+		self.offset = self.properties[MusicPlayerScript.PREV_NEXT]
 	end
-
-
 
 	if self.active then
-		self.currentSongProgress = self.currentSongProgress + deltaTimeSeconds
+		self.songProgress = self.songProgress + deltaTimeSeconds
 	end
 
-	if self.currentSongProgress >= self.properties.currentSongDuration then
+	if self.songProgress >= self.properties.songDuration then
+		--Printf(
+		--	"MusicPlayer: songProgress ({1}) > properties.songDuration ({2})",
+		--	self.songProgress, self.properties.songDuration
+		--)
+
 		self:Next()
 	end
 end
 
 ---
--- Called each frame on the client.
---
--- @tparam  number  deltaTimeSeconds  Time elapsed since the last frame was rendered.
+--- Called each frame on the client.
+---
+--- @param  deltaTimeSeconds  number  @Time elapsed since the last frame was rendered.
+--- @return void
 ---
 function MusicPlayerScript:ClientOnTick(deltaTimeSeconds)
 	if self:GetEntity().active then
-		self.currentSongProgress = self.currentSongProgress + deltaTimeSeconds
+		self.songProgress = self.songProgress + deltaTimeSeconds
 	end
 
 	if not self.connected then
-		if self.currentSongProgress >= self.currentSongDuration then
+		-- Check if play state has changed.
+		local play = self.localProperties.PLAY
+		if self.active ~= play then
+			--Printf("MusicPlayer: self.active ({1}) != self.properties.PLAY ({2})", self.active, play)
+
+			--self.active = play
+			if play then
+				self:Play()
+			else
+				self:Stop()
+			end
+		end
+
+		if self.songProgress >= self.localProperties.songDuration then
+			--Printf(
+			--	"MusicPlayer: self.connected " ..
+			--		"and self.songProgress ({1}) >= self.localProperties.songDuration ({2})",
+			--	self.songProgress, self.localProperties.songDuration
+			--)
+
 			self:Next()
 		end
 	end
 end
 
----
--- Get the current song.
---
--- @treturn ?number
----
-function MusicPlayerScript:GetCurrentQueuePosition()
-	local position
-	if IsServer() or self.connected then
-		if 0 == self.properties.currentQueuePosition then
-			return nil
-		end
+----
+--- @return PropertyArray<SoundAsset>
+----
+function MusicPlayerScript:GetPlaylist()
+	--Print("MusicPlayer: GetPlaylist")
 
-		position = self.properties.currentQueuePosition
-	else
-		position = self.currentQueuePosition
-	end
+	local playlist = (IsServer() or self.connected)
+		and self.properties.Playlist
+		or self.localProperties.Playlist
 
-	Printf("MusicPlayer: GetCurrentQueuePosition: {1}", song)
-
-	return position
+	return playlist.musicPlaylistScript.properties.tracks
 end
 
----
--- Set the current song.
---
--- @tparam  ?number  song
----
-function MusicPlayerScript:SetCurrentQueuePosition(song)
-	if nil == song then
-		song = 0
+----
+--- @param  position  number
+--- @return SoundAsset
+----
+function MusicPlayerScript:GetPlaylistAsset(position)
+	--Printf("MusicPlayer: GetPlaylistAsset {1}", position)
+
+	if 0 == position then
+		return nil
 	end
+
+	local playlist = (IsServer() or self.connected)
+		and self.properties.Playlist
+		or self.localProperties.Playlist
+
+	return playlist.musicPlaylistScript.properties.tracks[position] or nil
+end
+
+----
+--- @return boolean
+----
+function MusicPlayerScript:GetPlay()
+	--Print("MusicPlayer: GetPlay")
+
+	return (IsServer() or self.connected)
+		and self.properties.PLAY
+		or self.localProperties.PLAY
+end
+
+--
+-- @param  play  boolean
+-- @return void
+--
+--function MusicPlayerScript:SetPlay(play)
+--	Printf("MusicPlayer: SetPlay {1}", play)
+--
+--	if IsServer() then
+--		self.properties.PLAY = play
+--	elseif self.connected then
+--		if play ~= self.properties.PLAY then
+--			self:SendToServer("SetPlay", play)
+--		end
+--	else
+--		self.localProperties.PLAY = play
+--	end
+--end
+
+----
+--- Get the current song.
+---
+--- @return number
+----
+function MusicPlayerScript:GetPlaylistPosition()
+	--Print("MusicPlayer: GetPlaylistPosition")
+
+	return (IsServer() or self.connected)
+		and self.properties.playlistPosition
+		or self.localProperties.playlistPosition
+end
+
+----
+--- Set the current song.
+---
+--- @todo Figure out way to declare song Durations in playlists.
+---
+--- @param position number|nil
+----
+function MusicPlayerScript:SetPlaylistPosition(position)
+	--Printf("MusicPlayer: SetPlaylistPosition {1}", position)
+
+	position = nil == position and 0 or position
 
 	if IsServer() then
-		if self.properties.currentQueuePosition ~= song then
-			Printf("MusicPlayer: Setting currentQueuePosition to {1}", song)
-			self.properties.currentQueuePosition = song
-			-- TODO: figure out way to declare song Durations in playlists.
-			self.properties.currentSongDuration = self.properties[MusicPlayerScript.PROPERTY_SONG_DURATION]
-			self.currentSongProgress = 0
+		if self.properties.playlistPosition ~= position then
+			self.properties.playlistPosition = position
+		end
+	elseif self.connected then
+		if self.properties.playlistPosition ~= position then
+			self:SendToServer("SetPlaylistPosition", position)
 		end
 	else
-		if self.connected then
-			if self.properties.currentQueuePosition ~= song then
-				self:SendToServer("SetCurrentQueuePosition", song)
-				self.currentSongProgress = 0
-			end
-		else
-			if self.currentQueuePosition ~= song then
-				Printf("MusicPlayer: Setting currentQueuePosition to {1}", song)
-				self.currentQueuePosition = song
-				-- TODO: figure out way to declare song Durations in playlists.
-				self.currentSongDuration = self.properties[MusicPlayerScript.PROPERTY_SONG_DURATION]
-				self.currentSongProgress = 0
-			end
+		if self.localProperties.playlistPosition ~= position then
+			self.localProperties.playlistPosition = position
 		end
 	end
 end
 
----
--- @treturn SoundAsset
----
-function MusicPlayerScript:ClientGetSound()
-	assert(IsClient(), "MusicPlayer: ClientGetSound() should only be called from the Client.")
+----
+--- @return PropertyArray<SoundAsset>
+----
+function MusicPlayerScript:GetQueue()
+	--Print("MusicPlayer: GetQueue")
 
-	return self:GetEntity().sound
+	return (IsServer() or self.connected)
+		and self.properties.Queue
+		or self.localProperties.Queue
 end
 
+----
+--- @param  position  number
+--- @return SoundAsset
+----
+function MusicPlayerScript:GetQueueAsset(position)
+	--Printf("MusicPlayer: GetQueueAsset {1}", position)
+
+	if 0 == position then
+		return nil
+	end
+
+	return (IsServer() or self.connected)
+		and self.properties.Queue[position]
+		or self.localProperties.Queue[position]
+end
+
+----
+--- Get the current song.
 ---
--- @treturn bool
+--- @return number
+----
+function MusicPlayerScript:GetQueuePosition()
+	--Print("MusicPlayer: GetQueuePosition")
+
+	return (IsServer() or self.connected)
+		and self.properties.queuePosition
+		or self.localProperties.queuePosition
+end
+
+----
+--- Set the current song.
 ---
+--- @todo Figure out way to declare song Durations in playlists.
+---
+--- @param song number|nil
+----
+function MusicPlayerScript:SetQueuePosition(song)
+	--Printf("MusicPlayer: SetQueuePosition {1}", song)
+
+	song = nil == song and 0 or song
+
+	if IsServer() then
+		if self.properties.queuePosition ~= song then
+			self.properties.queuePosition = song
+			self.properties.songDuration = self.properties.Duration
+		end
+	elseif self.connected then
+		if self.properties.queuePosition ~= song then
+			self:SendToServer("SetQueuePosition", song)
+		end
+	else
+		if self.localProperties.queuePosition ~= song then
+			self.localProperties.queuePosition = song
+			self.localProperties.songDuration = self.properties.Duration
+		end
+	end
+
+	self.songProgress = 0
+end
+
+----
+--- @return SoundAsset
+----
+function MusicPlayerScript:GetSound()
+	local result = IsServer() and self.sound or self:GetEntity().sound
+
+	--Printf("MusicPlayer: GetSound: {1}", result)
+
+	return result
+end
+
+----
+--- @param  sound  SoundAsset
+--- @return void
+----
+function MusicPlayerScript:SetSound(sound)
+	--Printf("MusicPlayer: SetSound {1}", sound and sound:GetName() or "nil")
+
+	if IsServer() then
+		self.sound = sound
+		self.songProgress = 0
+		self.properties.songDuration = self.properties.Duration
+		self:SendToAllClients("CallIfConnected", "ClientSetSound", sound)
+	elseif self.connected then
+		self:SendToServer("SetSound", sound)
+	else
+		self:ClientSetSound(sound)
+	end
+end
+
+----
+--- @param  sound  SoundAsset
+--- @return void
+----
+function MusicPlayerScript:ClientSetSound(sound)
+	--Printf("MusicPlayer: ClientSetSound {1}", sound and sound:GetName() or "nil")
+
+	assert(IsClient(), "MusicPlayer: ClientSetSound() should only be called from the Client.")
+
+	self:GetEntity().sound = sound
+	self.songProgress = 0
+	self.localProperties.songDuration = self.properties.Duration
+end
+
+----
+--- @return boolean
+----
 function MusicPlayerScript:IsActive()
-	if IsServer() then
-		return self.active
-	else
-		return self:GetEntity().active
-	end
+	local result = IsServer() and self.active or self:GetEntity().active
+
+	--Printf("MusicPlayer: IsActive: {1}", result)
+
+	return result
 end
 
----
--- Get the next song to play.
---
--- @tparam  ?number  Song.
----
-function MusicPlayerScript:GetNextSong()
-	local currentQueuePosition = self:GetCurrentQueuePosition()
-
-	if nil == currentQueuePosition then
-		return 1
-	elseif (currentQueuePosition + 1) <= #self.properties[MusicPlayerScript.PROPERTY_QUEUE] then
-		return currentQueuePosition + 1
-	else
-		return nil
-	end
-end
-
----
--- Get the previous song to play.
---
--- @tparam  ?number  Song.
----
-function MusicPlayerScript:GetPreviousSong()
-	local currentQueuePosition = self:GetCurrentQueuePosition()
-
-	if nil == currentQueuePosition then
-		return 1
-	elseif (currentQueuePosition - 1) >= 1 then
-		return currentQueuePosition - 1
-	else
-		return nil
-	end
-end
-
-
----
--- Return the SoundAsset for the given song.
---
--- @tparam  ?number  song
--- @treturn ?SoundAsset
----
-function MusicPlayerScript:GetSoundAssetForSong(song)
-	local soundAsset = nil
-	if nil ~= song then
-		soundAsset = self.properties[MusicPlayerScript.PROPERTY_QUEUE][song] or nil
-
-		if nil == soundAsset then
-			song = nil
-		end
-	end
-
-	return soundAsset
-end
-
----
--- Play the given song.
---
--- @tparam  ?number  song  Song to play.
----
-function MusicPlayerScript:Play(song)
-	Printf("MusicPlayer: Play {1}", song)
-
-	local currentQueuePosition = self:GetCurrentQueuePosition()
-	song = song or currentQueuePosition or self:GetNextSong()
-
-	if song ~= currentQueuePosition and (IsServer() or not self.connected) then
-		self:SetCurrentQueuePosition(song)
-	end
+----
+--- @param  active  boolean
+--- @return void
+----
+function MusicPlayerScript:SetActive(active)
+	--Printf("MusicPlayer: SetActive {1}", active)
 
 	if IsServer() then
-		self:SendToAllClients("CallIfConnected", "Play", song)
-		self.active = true
-	else
-		local entity = self:GetEntity()
-		local sound  = self:GetSoundAssetForSong(song)
-
-		if entity.sound ~= sound then
-			Printf("MusicPlayer: Setting SoundAsset to {1}", sound)
-			entity.sound = sound
-			self.currentSongProgress = 0
+		if self.active ~= active then
+			--Printf("MusicPlayer: self.active ({1}) ~= active ({2})", self.active, active)
+			self.active = active
+			self:SendToAllClients("CallIfConnected", "ClientSetActive", active)
 		end
-
-		self.currentQueuePosition = song
-		self:GetEntity().active = true
-
-		self:PrintNowPlaying()
+	elseif self.connected then
+		self:SendToServer("SetSound", active)
+	else
+		self:ClientSetActive(active)
 	end
 end
 
+----
+--- @param  active  boolean
+--- @return void
 ---
--- Pause playback.
+function MusicPlayerScript:ClientSetActive(active)
+	--Printf("MusicPlayer: ClientSetActive {1}", active)
+
+	assert(IsClient(), "MusicPlayer: ClientSetActive() should only be called from the Client.")
+
+	local entity = self:GetEntity()
+	if entity.active ~= active then
+		entity.active = active
+	end
+end
+
+----
+--- @param  queuePosition  number
+--- @return SoundAsset
+----
+function MusicPlayerScript:SelectQueuePosition(queuePosition)
+	--Printf("MusicPlayer: SelectQueuePosition {1}", queuePosition)
+
+	local musicAsset = 0 ~= queuePosition
+		and self:GetQueueAsset(queuePosition)
+		or nil
+
+	--if musicAsset then
+	self:SetQueuePosition(queuePosition)
+	self:SetPlaylistPosition(0)
+	self:SetSound(musicAsset)
+	--end
+
+	return musicAsset
+end
+
+----
+--- @param  playlistPosition  number
+--- @return void
+----
+function MusicPlayerScript:SelectPlaylistPosition(playlistPosition)
+	--Printf("MusicPlayer: SelectPlaylistPosition {1}", playlistPosition)
+
+	self:SetPlaylistPosition(playlistPosition)
+	self:SetQueuePosition(0)
+	self:SetSound(self:GetPlaylistAsset(playlistPosition))
+end
+
+----
+--- Play the given song.
 ---
+--- @overload fun(): void
+--- @return void
+----
+function MusicPlayerScript:Play()
+	--Printf("MusicPlayer: Play")
+
+	if not self:GetSound() then
+		self:Next()
+	end
+
+	self:SetActive(true)
+	--self:SetPlay(true)
+
+	self:PrintNowPlaying()
+end
+
+----
+--- Pause playback.
+---
+--- @return void
+----
 function MusicPlayerScript:Pause()
-	if IsServer() then
-		self:SendToAllClients("CallIfConnected", "Pause")
-		self.active = false
-	else
-		self:GetEntity().active = false
-		Printf("Song paused at {1}", self.currentSongProgress)
-	end
+	--Printf("MusicPlayer: Pause")
+
+	self:SetActive(false)
+
+	Printf("Song paused at {1}", self.songProgress)
 end
 
+----
+--- Stop playback.
 ---
--- Stop playback.
----
+--- @return void
+----
 function MusicPlayerScript:Stop()
-	Printf("MusicPlayer: Stop")
+	--Printf("MusicPlayer: Stop")
 
-	if IsServer() or not self.connected then
-		self:SetCurrentQueuePosition(nil)
-	end
-
-	if IsServer() then
-		self:SendToAllClients("CallIfConnected", "Stop")
-		self.active = false
-	else
-		local entity = self:GetEntity()
-		entity.active = false
-		entity.sound = null
-		self.currentSongProgress = 0
-	end
+	self:SetSound(nil)
+	self:SetActive(false)
+	--self:SetPlay(false)
 end
 
+----
+--- Go to the next song.
 ---
--- Go to the next song.
----
+--- @return void
+----
 function MusicPlayerScript:Next()
-	Printf("MusicPlayer: Next")
+	--Printf("MusicPlayer: Next")
 
-	local nextSong = self:GetNextSong()
-
-	if nextSong then
-		self:Play(nextSong)
+	local nextQueuePosition = self:GetQueuePosition() + 1
+	if nextQueuePosition <= #self:GetQueue() then
+		self:SelectQueuePosition(nextQueuePosition)
 	else
-		self:Stop()
+		local nextPlaylistPosition = self:GetPlaylistPosition() + 1
+		if nextPlaylistPosition <= #self:GetPlaylist() then
+			self:SelectPlaylistPosition(nextPlaylistPosition)
+		else
+			-- We are at the end of the playlist. Reset positions and stop playing.
+			self:SelectPlaylistPosition(0)
+			--self:SetQueuePosition(0)
+			--self:SetPlaylistPosition(0)
+			--self:Stop()
+		end
 	end
+
+	self:PrintNowPlaying()
 end
 
-
+----
+--- Go to the next song.
 ---
--- Go to the next song.
----
+--- @return void
+----
 function MusicPlayerScript:Previous()
-	Printf("MusicPlayer: Previous")
+	--Printf("MusicPlayer: Previous")
 
-	local song = self:GetPreviousSong()
-
-	if song then
-		self:Play(song)
+	local previousPlaylistPosition = self:GetPlaylistPosition() - 1
+	if previousPlaylistPosition > 0 then
+		self:SelectPlaylistPosition(previousPlaylistPosition)
 	else
-		self:Stop()
-		self:Play()
+		local previousQueuePosition = self:GetQueuePosition() - 1
+		if previousQueuePosition >= 0 then
+			self:SelectQueuePosition(previousQueuePosition)
+		else
+			-- We're at the start of the queue. Restart playback from the beginning.
+			self:Stop()
+			self:Play()
+		end
 	end
+
+	self:PrintNowPlaying()
 end
 
-
+----
+--- Return the name of the song that is currently playing.
 ---
--- Return the name of the song that is currently playing.
----
+--- @return void
+----
 function MusicPlayerScript:PrintNowPlaying()
-	local soundAsset = self:ClientGetSound()
+	--Printf("MusicPlayer: PrintNowPlaying")
 
-    local songName
-	if nil == soundAsset then
-		songName = "none"
-	else
-		songName = soundAsset:GetName()
-	end
+	local soundAsset = self:GetSound()
 
-	--	self:GetEntity().MusicPlayerWidget.js.MusicPlayerModel.nowPlaying = songName
+	--- @type string
+	local songName = nil == soundAsset and "none" or soundAsset:GetName()
 
 	Printf("Now Playing: {1}", songName)
 end
 
+----
+--- Call eventName, but only if this MusicPlayer is connected to the shared server MusicPlayer instance.
 ---
--- Call eventName, but only if this MusicPlayer is connected to the shared server MusicPlayer instance.
---
--- @tparam       string        eventName
--- @tparam[opt]  {string,...}  args
----
+--- @param  eventName  "ClientSetSound"|"Play"|"Pause"|"Stop"
+--- @vararg any
+--- @return void
+----
 function MusicPlayerScript:CallIfConnected(eventName, ...)
-	Printf("MusicPlayer: CallIfConnected {1}, ...", eventName)
+	--Printf("MusicPlayer: CallIfConnected {1}, ...", eventName)
+
+	assert(IsClient(), "CallIfConnected() should only be called on the Client.")
 
 	if self.connected then
+		--self[eventName](self, ...)
 		self:SendToScript(eventName, ...)
 	end
 end
