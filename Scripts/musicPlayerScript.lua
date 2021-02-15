@@ -69,7 +69,7 @@ MusicPlayerScript.Properties = {
 		name    = MusicPlayerScript.PREV_NEXT,
 		type    = "number",
 		tooltip = "Skip to the next / previous song by pressing the +/- buttons",
-		default = 2000000000
+		default = 0
 	},
 	{
 		name      = "Queue",
