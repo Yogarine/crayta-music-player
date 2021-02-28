@@ -41,19 +41,24 @@
 --- @field clientReady  boolean
 --------------------------------------------------------------------------------------------------------
 local MusicPlayerScript = {
-	PREV_NEXT = "PREV | NEXT"
+	PREV_NEXT                  = "PREV | NEXT",
+	REPEAT_ALL                 = "Repeat All",
+	persistentPlaylistPosition = 0,
+	persistentQueuePosition    = 0
 }
 
 --------------------------------------------------------------------------------------------------------
 --- @class MusicPlayerScriptProperties : Properties
 --- @field PLAY              boolean
 --- @field ["PREV | NEXT"]   number
+--- @field ["Repeat All"]    boolean
 --- @field Queue             PropertyArray<SoundAsset>
 --- @field Playlist          MusicPlaylist
 --- @field Duration          number
 --- @field queuePosition     number
 --- @field playlistPosition  number
 --- @field songDuration      number
+--- @field emptyPlaylist     PropertyArray<SoundAsset>
 --------------------------------------------------------------------------------------------------------
 
 ----
@@ -70,6 +75,11 @@ MusicPlayerScript.Properties = {
 		type    = "number",
 		tooltip = "Skip to the next / previous song by pressing the +/- buttons",
 		default = 0
+	},
+	{
+		name    = MusicPlayerScript.REPEAT_ALL,
+		type    = "boolean",
+		tooltip = "Repeat play at the end of the queue or playlist.",
 	},
 	{
 		name      = "Queue",
@@ -110,6 +120,12 @@ MusicPlayerScript.Properties = {
 		editable = false,
 		default  = 1500
 	},
+	{
+		name      = "emptyPlaylist",
+		type      = "soundasset",
+		editable  = false,
+		container = "array",
+	}
 }
 
 ----
@@ -137,6 +153,14 @@ function MusicPlayerScript:Init()
 	--Printf("MusicPlayer: Init")
 
 	self:InitFields()
+
+	if MusicPlayerScript.persistentQueuePosition > 0 then
+		self.properties.queuePosition = MusicPlayerScript.persistentQueuePosition
+	end
+
+	if MusicPlayerScript.persistentQueuePosition > 0 then
+		self.properties.playlistPosition = MusicPlayerScript.persistentPlaylistPosition
+	end
 
 	self.clientReady = false
 end
@@ -174,18 +198,27 @@ function MusicPlayerScript:ClientInit()
 		PLAY             = self.properties.PLAY,
 
 		----
+        --- @type boolean
+        ----
+		RepeatAll        = self.properties[MusicPlayerScript.REPEAT_ALL],
+
+		----
         --- Current position in queue.
         ---
         --- @type number
         ----
-		queuePosition    = self.properties.queuePosition,
+		queuePosition    = (MusicPlayerScript.persistentQueuePosition > 0)
+			and MusicPlayerScript.persistentQueuePosition
+			or self.properties.queuePosition,
 
 		----
-        ---Current position in playlist.
+        --- Current position in playlist.
         ---
         --- @type number
         ----
-		playlistPosition = self.properties.playlistPosition,
+		playlistPosition = (MusicPlayerScript.persistentPlaylistPosition > 0)
+			and MusicPlayerScript.persistentPlaylistPosition
+			or self.properties.playlistPosition,
 
 		----
         --- @type number
@@ -297,11 +330,18 @@ end
 function MusicPlayerScript:GetPlaylist()
 	--Print("MusicPlayer: GetPlaylist")
 
-	local playlist = (IsServer() or self.connected)
-		and self.properties.Playlist
-		or self.localProperties.Playlist
+	local playlist
+	if (IsServer() or self.connected) then
+		playlist = self.properties.Playlist
+	else
+		playlist = self.localProperties.Playlist
+	end
 
-	return playlist.musicPlaylistScript.properties.tracks
+	local tracks = playlist
+		and playlist.musicPlaylistScript.properties.tracks
+		or self.properties.emptyPlaylist
+
+	return tracks
 end
 
 ----
@@ -315,11 +355,9 @@ function MusicPlayerScript:GetPlaylistAsset(position)
 		return nil
 	end
 
-	local playlist = (IsServer() or self.connected)
-		and self.properties.Playlist
-		or self.localProperties.Playlist
+	local playlist = self:GetPlaylist()
 
-	return playlist.musicPlaylistScript.properties.tracks[position] or nil
+	return playlist[position] or nil
 end
 
 ----
@@ -331,6 +369,19 @@ function MusicPlayerScript:GetPlay()
 	return (IsServer() or self.connected)
 		and self.properties.PLAY
 		or self.localProperties.PLAY
+end
+
+----
+--- @return boolean
+----
+function MusicPlayerScript:GetRepeatAll()
+	--Print("MusicPlayer: GetRepeatAll")
+
+	if IsServer() or self.connected then
+		return self.properties[MusicPlayerScript.REPEAT_ALL]
+	else
+		return self.localProperties.RepeatAll
+	end
 end
 
 --
@@ -376,6 +427,8 @@ function MusicPlayerScript:SetPlaylistPosition(position)
 
 	position = nil == position and 0 or position
 
+	MusicPlayerScript.persistentPlaylistPosition = position
+
 	if IsServer() then
 		if self.properties.playlistPosition ~= position then
 			self.properties.playlistPosition = position
@@ -398,7 +451,7 @@ function MusicPlayerScript:GetQueue()
 	--Print("MusicPlayer: GetQueue")
 
 	return (IsServer() or self.connected)
-		and self.properties.Queue
+		and (self.properties.Queue or nil)
 		or self.localProperties.Queue
 end
 
@@ -442,6 +495,8 @@ function MusicPlayerScript:SetQueuePosition(song)
 	--Printf("MusicPlayer: SetQueuePosition {1}", song)
 
 	song = nil == song and 0 or song
+
+	MusicPlayerScript.persistentQueuePosition = song
 
 	if IsServer() then
 		if self.properties.queuePosition ~= song then
@@ -565,7 +620,7 @@ function MusicPlayerScript:SelectQueuePosition(queuePosition)
 
 	--if musicAsset then
 	self:SetQueuePosition(queuePosition)
-	self:SetPlaylistPosition(0)
+	--	self:SetPlaylistPosition(0)
 	self:SetSound(musicAsset)
 	--end
 
@@ -580,7 +635,7 @@ function MusicPlayerScript:SelectPlaylistPosition(playlistPosition)
 	--Printf("MusicPlayer: SelectPlaylistPosition {1}", playlistPosition)
 
 	self:SetPlaylistPosition(playlistPosition)
-	self:SetQueuePosition(0)
+	--	self:SetQueuePosition(0)
 	self:SetSound(self:GetPlaylistAsset(playlistPosition))
 end
 
@@ -591,7 +646,7 @@ end
 --- @return void
 ----
 function MusicPlayerScript:Play()
-	--Printf("MusicPlayer: Play")
+	Printf("MusicPlayer: Play")
 
 	if not self:GetSound() then
 		self:Next()
@@ -635,21 +690,25 @@ end
 --- @return void
 ----
 function MusicPlayerScript:Next()
-	--Printf("MusicPlayer: Next")
+	Printf("MusicPlayer: Next")
 
 	local nextQueuePosition = self:GetQueuePosition() + 1
-	if nextQueuePosition <= #self:GetQueue() then
+	local queue = self:GetQueue()
+	if nextQueuePosition <= #queue then
 		self:SelectQueuePosition(nextQueuePosition)
 	else
 		local nextPlaylistPosition = self:GetPlaylistPosition() + 1
-		if nextPlaylistPosition <= #self:GetPlaylist() then
+		local playlist = self:GetPlaylist()
+		if playlist and nextPlaylistPosition <= #playlist then
 			self:SelectPlaylistPosition(nextPlaylistPosition)
 		else
 			-- We are at the end of the playlist. Reset positions and stop playing.
 			self:SelectPlaylistPosition(0)
-			--self:SetQueuePosition(0)
-			--self:SetPlaylistPosition(0)
-			--self:Stop()
+			self:SelectQueuePosition(0)
+
+			if self:GetRepeatAll() and (#queue > 0 or #playlist > 0) then
+				self:Next()
+			end
 		end
 	end
 
